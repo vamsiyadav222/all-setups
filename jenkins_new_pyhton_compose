@@ -1,0 +1,102 @@
+
+pipeline {
+    agent any
+
+    stages {
+        stage('Code') {
+            steps {
+                git 'https://github.com/vamsiyadav222/python-code-library-app.git'
+            }
+        }
+
+        stage('CQA') {
+            steps {
+                script {
+                    def scannerHome = tool(
+                        name: 'SonarScanner',
+                        type: 'hudson.plugins.sonar.SonarRunnerInstallation'
+                    )
+
+                    withSonarQubeEnv('mysonar') {
+                        sh "${scannerHome}/bin/sonar-scanner"
+                    }
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+        stage('Docker Build') {
+    steps {
+        sh '''
+            docker build -t python-app-1:latest -f auth/Dockerfile auth/
+            docker build -t python-app-2:latest -f book/Dockerfile book/
+            docker build -t python-app-3:latest -f borrow/Dockerfile borrow/
+            docker build -t python-app-4:latest -f database/Dockerfile database/
+            docker build -t python-app-5:latest -f Dockerfile .
+
+            docker images
+        '''
+    }
+}
+       stage('Trivy Image Scan') {
+    steps {
+        sh '''
+            trivy image --severity HIGH,CRITICAL --exit-code 0 python-app-1:latest
+            trivy image --severity HIGH,CRITICAL --exit-code 0 python-app-2:latest
+            trivy image --severity HIGH,CRITICAL --exit-code 0 python-app-3:latest
+            trivy image --severity HIGH,CRITICAL --exit-code 0 python-app-4:latest
+            trivy image --severity HIGH,CRITICAL --exit-code 0 python-app-5:latest
+        '''
+    }
+}
+       
+stage('Push to Docker Hub') {
+    steps {
+        withCredentials([
+            usernamePassword(
+                credentialsId: 'dockerhub-creds',
+                usernameVariable: 'DOCKERHUB_USER',
+                passwordVariable: 'DOCKERHUB_PASS'
+            )
+        ]) {
+            sh '''
+                set +x
+                echo "$DOCKERHUB_PASS" | docker login \
+                    -u "$DOCKERHUB_USER" --password-stdin
+
+                docker tag python-app-1:latest "$DOCKERHUB_USER/python-app-1:latest"
+                docker tag python-app-2:latest "$DOCKERHUB_USER/python-app-2:latest"
+                docker tag python-app-3:latest "$DOCKERHUB_USER/python-app-3:latest"
+                docker tag python-app-4:latest "$DOCKERHUB_USER/python-app-4:latest"
+                docker tag python-app-5:latest "$DOCKERHUB_USER/python-app-5:latest"
+
+                docker push "$DOCKERHUB_USER/python-app-1:latest"
+                docker push "$DOCKERHUB_USER/python-app-2:latest"
+                docker push "$DOCKERHUB_USER/python-app-3:latest"
+                docker push "$DOCKERHUB_USER/python-app-4:latest"
+                docker push "$DOCKERHUB_USER/python-app-5:latest"
+
+                docker logout
+            '''
+        }
+    }
+}
+stage('Deploy') {
+    steps {
+        sh '''
+            docker-compose -f compose.yml pull
+            docker-compose -f compose.yml up -d
+            docker-compose -f compose.yml ps
+        '''
+    }
+}
+
+
+    }
+}
